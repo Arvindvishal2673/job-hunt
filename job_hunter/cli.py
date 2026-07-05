@@ -30,6 +30,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--min-salary", type=int, help="Minimum salary threshold")
     parser.add_argument(
+        "--target-india-only", action="store_true", help="Search only Indian portals and domains"
+    )
+    parser.add_argument(
         "--output", default="outputs/job_matches.xlsx", help="Output .xlsx path"
     )
     return parser
@@ -43,6 +46,7 @@ def main(argv=None) -> int:
         locations=args.location,
         remote_only=args.remote_only,
         min_salary=args.min_salary,
+        target_india_only=args.target_india_only,
     )
     try:
         result = ResumeJobOrchestrator().run(

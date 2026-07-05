@@ -26,6 +26,8 @@ PLATFORM_DOMAINS = {
     "arbeitnow.com": "Arbeitnow",
     "reed.co.uk": "Reed",
     "adzuna.com": "Adzuna",
+    "boards.greenhouse.io": "Greenhouse",
+    "jobs.lever.co": "Lever",
 }
 
 PLATFORM_DOMAINS_INDIA = {
@@ -40,6 +42,12 @@ PLATFORM_DOMAINS_INDIA = {
     "wellfound.com": "Wellfound",
     "glassdoor.co.in": "Glassdoor India",
     "foundit.in": "Foundit India",
+    "boards.greenhouse.io": "Greenhouse",
+    "jobs.lever.co": "Lever",
+    "freshersworld.com": "Freshersworld",
+    "shine.com": "Shine",
+    "hirist.tech": "Hirist",
+    "timesjobs.com": "TimesJobs",
 }
 
 

@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
 
 from . import config
-from .agents.api_agents import ArbeitnowAgent, RemoteOKAgent, RemotiveAgent
+from .agents.api_agents import AdzunaAgent, ArbeitnowAgent, RemoteOKAgent, RemotiveAgent
 from .agents.platform_searcher import PlatformSearcher
 from .agents.resume_analyzer import ResumeAnalyzer
 from .agents.search_strategy import SearchStrategyAgent
@@ -29,7 +29,7 @@ class ResumeJobOrchestrator:
         self.blackboard = {"criteria": None, "profile": None, "jobs": [], "metrics": {}}
         self.analyzer = ResumeAnalyzer(self.llm)
         self.strategy_agent = SearchStrategyAgent(self.llm)
-        self.sources = [PlatformSearcher(), RemotiveAgent(), RemoteOKAgent(), ArbeitnowAgent()]
+        self.sources = [PlatformSearcher(), RemotiveAgent(), RemoteOKAgent(), ArbeitnowAgent(), AdzunaAgent()]
         self.vetter = MatchVettingAgent(self.llm)
 
     def run(
@@ -45,10 +45,16 @@ class ResumeJobOrchestrator:
 
         # Setup sources dynamically based on criteria
         if criteria.target_india_only:
-            log.info("Targeting India jobs only. Using PlatformSearcher with India configuration.")
-            self.sources = [PlatformSearcher(target_india_only=True)]
+            log.info("Targeting India jobs only. Using PlatformSearcher and Adzuna with India configuration.")
+            self.sources = [PlatformSearcher(target_india_only=True), AdzunaAgent()]
         else:
-            self.sources = [PlatformSearcher(target_india_only=False), RemotiveAgent(), RemoteOKAgent(), ArbeitnowAgent()]
+            self.sources = [
+                PlatformSearcher(target_india_only=False),
+                RemotiveAgent(),
+                RemoteOKAgent(),
+                ArbeitnowAgent(),
+                AdzunaAgent(),
+            ]
 
         # Phase 1 (Ingest): resume -> CandidateProfile on the blackboard.
         log.info("Phase 1: analyzing resume %s", resume_path)

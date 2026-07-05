@@ -121,3 +121,68 @@ class ArbeitnowAgent(JobSourceAgent):
             if len(listings) >= max_results:
                 break
         return listings
+
+
+class AdzunaAgent(JobSourceAgent):
+    name = "adzuna"
+    BASE_URL = "https://api.adzuna.com/v1/api/jobs/in/search"
+
+    def search(self, queries: List[str], max_results: int = 25) -> List[JobListing]:
+        import re
+        app_id = config.ADZUNA_APP_ID
+        app_key = config.ADZUNA_APP_KEY
+        if not app_id or not app_key:
+            log.info("Adzuna credentials not set; skipping Adzuna search.")
+            return []
+
+        listings: List[JobListing] = []
+        try:
+            for query in queries or [""]:
+                url = f"{self.BASE_URL}/1"
+                params = {
+                    "app_id": app_id,
+                    "app_key": app_key,
+                    "results_per_page": min(max_results, 50),
+                    "what": query,
+                }
+                res = requests.get(url, params=params, timeout=config.REQUEST_TIMEOUT)
+                res.raise_for_status()
+                data = res.json()
+                for job in data.get("results", [])[:max_results]:
+                    title = job.get("title", "")
+                    title = re.sub(r"<[^>]*>", "", title).strip()
+                    
+                    company = job.get("company", {}).get("display_name", "")
+                    
+                    locations = job.get("location", {}).get("area", [])
+                    location = ", ".join(str(loc) for loc in locations) if locations else "India"
+                    
+                    desc = job.get("description", "")
+                    desc = re.sub(r"<[^>]*>", "", desc).strip()
+                    
+                    salary_min = job.get("salary_min")
+                    salary_max = job.get("salary_max")
+                    salary = ""
+                    if salary_min or salary_max:
+                        if salary_min and salary_max:
+                            salary = f"INR {salary_min:,} - {salary_max:,}"
+                        elif salary_min:
+                            salary = f"INR {salary_min:,}+"
+                        else:
+                            salary = f"INR {salary_max:,}"
+                    
+                    listings.append(
+                        JobListing(
+                            title=title,
+                            company=company,
+                            location=location,
+                            url=job.get("redirect_url", ""),
+                            source="Adzuna",
+                            description=desc[:2000],
+                            salary=salary,
+                        )
+                    )
+        except Exception as exc:
+            log.warning("Adzuna search failed: %s", exc)
+            return []
+        return listings
