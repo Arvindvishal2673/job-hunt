@@ -23,11 +23,6 @@ Return ONLY a JSON object with these keys:
 - "skills": A comprehensive list of technical skills, libraries, frameworks, programming languages, and tools found on the resume (e.g., Python, PyTorch, TensorFlow, OpenCV, YOLO, FastAPI, LangChain, LangGraph, Git, Docker, Hugging Face). Extract every significant technical term to aid keyword-matching.
 - "seniority": One of "Junior" (for freshers, interns, <2 yrs exp), "Mid-level", "Senior", "Staff/Principal".
 - "job_titles": 4-5 specific target job titles, ordered by match strength, representing roles the candidate is highly qualified to apply for (e.g., "AI Engineer", "LLM Developer", "Computer Vision Engineer", "ML Engineer", "FastAPI Developer").
-- "search_queries": 3 optimized job-board search query strings using Boolean logic.
-  * Query 1 (GenAI/LLM): Target Generative AI, LLM, RAG, and AI Agent roles (e.g. `(AI OR LLM OR GenAI) AND (LangChain OR RAG OR Agent) AND Python`).
-  * Query 2 (Vision/Deep Learning): Target Computer Vision and Deep Learning roles (e.g. `("Computer Vision" OR OpenCV OR YOLO) AND (ML OR AI OR "Deep Learning")`).
-  * Query 3 (Backend/ML Engineering): Target Backend AI development and ML Engineering roles (e.g. `(Python OR FastAPI OR Backend) AND (ML OR AI OR "Machine Learning")`).
-  Ensure the queries are tailored for job portal filters. If the candidate is a fresher/junior, include junior or intern query variations.
 
 Resume:
 \"\"\"
@@ -72,6 +67,6 @@ class ResumeAnalyzer:
             skills=[str(s).strip() for s in data.get("skills", [])],
             seniority=data.get("seniority", "Unknown"),
             job_titles=[str(t) for t in data.get("job_titles", [])],
-            search_queries=[str(q) for q in data.get("search_queries", [])][:3],
             raw_text=raw,
         )
+

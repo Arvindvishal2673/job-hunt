@@ -9,6 +9,7 @@ from . import config
 from .agents.api_agents import ArbeitnowAgent, RemoteOKAgent, RemotiveAgent
 from .agents.platform_searcher import PlatformSearcher
 from .agents.resume_analyzer import ResumeAnalyzer
+from .agents.search_strategy import SearchStrategyAgent
 from .agents.vetting import MatchVettingAgent
 from .models import CandidateProfile, JobListing, JobSearchCriteria
 from .writer import write_excel
@@ -27,6 +28,7 @@ class ResumeJobOrchestrator:
         self.llm = llm
         self.blackboard = {"criteria": None, "profile": None, "jobs": [], "metrics": {}}
         self.analyzer = ResumeAnalyzer(self.llm)
+        self.strategy_agent = SearchStrategyAgent(self.llm)
         self.sources = [PlatformSearcher(), RemotiveAgent(), RemoteOKAgent(), ArbeitnowAgent()]
         self.vetter = MatchVettingAgent(self.llm)
 
@@ -51,6 +53,11 @@ class ResumeJobOrchestrator:
         # Phase 1 (Ingest): resume -> CandidateProfile on the blackboard.
         log.info("Phase 1: analyzing resume %s", resume_path)
         profile = self.analyzer.analyze(resume_path)
+        
+        # Phase 1.5: Generate Search Strategy
+        log.info("Phase 1.5: generating search strategy")
+        profile.search_queries = self.strategy_agent.generate_queries(profile)
+        
         self.blackboard["profile"] = profile
         queries = profile.search_queries or profile.job_titles or criteria.keywords
         log.info("Search queries: %s", queries)

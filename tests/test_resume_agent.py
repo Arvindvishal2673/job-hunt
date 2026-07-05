@@ -8,10 +8,10 @@ import pytest
 
 from job_hunter.agents.platform_searcher import (
     PLATFORM_DOMAINS,
-    _site_groups,
-    domain_to_platform,
+    PlatformSearcher,
 )
 from job_hunter.agents.resume_analyzer import ResumeAnalyzer
+from job_hunter.agents.search_strategy import SearchStrategyAgent
 from job_hunter.agents.vetting import MatchVettingAgent
 from job_hunter.llm import extract_json
 from job_hunter.models import CandidateProfile, JobListing, JobSearchCriteria
@@ -31,15 +31,18 @@ def make_profile() -> CandidateProfile:
 
 class TestPlatformMapping:
     def test_known_domains(self):
-        assert domain_to_platform("https://www.linkedin.com/jobs/view/1") == "LinkedIn"
-        assert domain_to_platform("https://remoteok.com/remote-jobs/1") == "RemoteOK"
-        assert domain_to_platform("https://uk.indeed.com/viewjob?jk=1") == "Indeed"
+        searcher = PlatformSearcher()
+        assert searcher.domain_to_platform("https://www.linkedin.com/jobs/view/1") == "LinkedIn"
+        assert searcher.domain_to_platform("https://remoteok.com/remote-jobs/1") == "RemoteOK"
+        assert searcher.domain_to_platform("https://uk.indeed.com/viewjob?jk=1") == "Indeed"
 
     def test_unknown_domain_falls_back(self):
-        assert domain_to_platform("https://example.org/job") == "Web"
+        searcher = PlatformSearcher()
+        assert searcher.domain_to_platform("https://example.org/job") == "Web"
 
     def test_site_groups_cover_all_15_platforms(self):
-        groups = _site_groups()
+        searcher = PlatformSearcher()
+        groups = searcher._site_groups()
         flattened = [domain for group in groups for domain in group]
         assert sorted(flattened) == sorted(PLATFORM_DOMAINS)
         assert len(groups) == 3
@@ -68,13 +71,37 @@ class TestResumeAnalyzer:
                 "skills": ["Python", "Django", "AWS"],
                 "seniority": "Senior",
                 "job_titles": ["Python Developer"],
-                "search_queries": ["python developer", "django engineer", "aws backend", "extra ignored"],
             }
         )
         profile = ResumeAnalyzer(llm=llm).analyze(resume)
         assert profile.seniority == "Senior"
-        assert len(profile.search_queries) == 3  # capped at 3 queries
+        assert not profile.search_queries  # empty by default, populated later
         assert "Django" in profile.skills
+
+
+class TestSearchStrategyAgent:
+    def test_generate_queries_builds_queries_from_llm_json(self):
+        llm = MagicMock()
+        llm.chat.return_value = json.dumps(
+            {
+                "search_queries": [
+                    "python developer",
+                    "django engineer",
+                    "aws backend",
+                    "extra ignored",
+                ]
+            }
+        )
+        profile = CandidateProfile(
+            summary="Experienced Python engineer.",
+            skills=["Python", "Django", "AWS"],
+            seniority="Senior",
+            job_titles=["Python Developer"],
+        )
+        queries = SearchStrategyAgent(llm=llm).generate_queries(profile)
+        assert len(queries) == 3  # capped at 3 queries
+        assert queries[0] == "python developer"
+        assert queries[2] == "aws backend"
 
 
 class TestVettingAgent:
