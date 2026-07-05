@@ -28,27 +28,37 @@ PLATFORM_DOMAINS = {
     "adzuna.com": "Adzuna",
 }
 
-
-def domain_to_platform(url: str) -> str:
-    """Map a result URL back to its origin platform name."""
-    host = urlparse(url).netloc.lower()
-    for domain, name in PLATFORM_DOMAINS.items():
-        if host == domain or host.endswith("." + domain):
-            return name
-    return "Web"
-
-
-def _site_groups(group_count: int = 3) -> List[List[str]]:
-    """Split the 15 platform domains into distinct `site:` search groups."""
-    domains = list(PLATFORM_DOMAINS)
-    size = -(-len(domains) // group_count)  # ceiling division
-    return [domains[i : i + size] for i in range(0, len(domains), size)]
+PLATFORM_DOMAINS_INDIA = {
+    "in.linkedin.com": "LinkedIn India",
+    "linkedin.com": "LinkedIn",
+    "in.indeed.com": "Indeed India",
+    "indeed.com": "Indeed",
+    "naukri.com": "Naukri",
+    "instahyre.com": "Instahyre",
+    "internshala.com": "Internshala",
+    "cuvette.tech": "Cuvette",
+    "wellfound.com": "Wellfound",
+    "glassdoor.co.in": "Glassdoor India",
+    "foundit.in": "Foundit India",
+}
 
 
 class PlatformSearcher(JobSourceAgent):
     """Runs grouped `site:` queries in parallel via DuckDuckGo Search."""
 
     name = "platform_searcher"
+
+    def __init__(self, target_india_only: bool = False):
+        self.target_india_only = target_india_only
+
+    def _get_domains(self) -> dict:
+        return PLATFORM_DOMAINS_INDIA if self.target_india_only else PLATFORM_DOMAINS
+
+    def _site_groups(self, group_count: int = 3) -> List[List[str]]:
+        """Split the platform domains into distinct `site:` search groups."""
+        domains = list(self._get_domains())
+        size = -(-len(domains) // group_count)  # ceiling division
+        return [domains[i : i + size] for i in range(0, len(domains), size)]
 
     def search(self, queries: List[str], max_results: int = 25) -> List[JobListing]:
         try:
@@ -62,13 +72,20 @@ class PlatformSearcher(JobSourceAgent):
 
         tasks = []
         for query in queries:
-            for group in _site_groups():
+            for group in self._site_groups():
                 sites = " OR ".join(f"site:{d}" for d in group)
                 tasks.append(f"{query} ({sites})")
 
+        # Set up region and time limits dynamically
+        region = "in-en" if self.target_india_only else "wt-wt"
+        timelimit = "m" if self.target_india_only else None  # "m" gets jobs posted in the past month
+
         listings: List[JobListing] = []
         with ThreadPoolExecutor(max_workers=6) as pool:
-            futures = {pool.submit(self._run_query, t, max_results): t for t in tasks}
+            futures = {
+                pool.submit(self._run_query, t, max_results, region, timelimit): t 
+                for t in tasks
+            }
             for future in as_completed(futures):
                 try:
                     listings.extend(future.result())
@@ -76,13 +93,12 @@ class PlatformSearcher(JobSourceAgent):
                     log.warning("Platform search failed for %r: %s", futures[future], exc)
         return listings
 
-    @staticmethod
-    def _run_query(query: str, max_results: int) -> List[JobListing]:
+    def _run_query(self, query: str, max_results: int, region: str, timelimit: str) -> List[JobListing]:
         from duckduckgo_search import DDGS
 
         results = []
         with DDGS() as ddgs:
-            for hit in ddgs.text(query, max_results=max_results):
+            for hit in ddgs.text(query, region=region, timelimit=timelimit, max_results=max_results):
                 url = hit.get("href", "")
                 if not url:
                     continue
@@ -90,8 +106,17 @@ class PlatformSearcher(JobSourceAgent):
                     JobListing(
                         title=hit.get("title", "").strip(),
                         url=url,
-                        source=domain_to_platform(url),
+                        source=self.domain_to_platform(url),
                         description=hit.get("body", ""),
                     )
                 )
         return results
+
+    def domain_to_platform(self, url: str) -> str:
+        """Map a result URL back to its origin platform name."""
+        host = urlparse(url).netloc.lower()
+        all_domains = {**PLATFORM_DOMAINS, **PLATFORM_DOMAINS_INDIA}
+        for domain, name in all_domains.items():
+            if host == domain or host.endswith("." + domain):
+                return name
+        return "Web"

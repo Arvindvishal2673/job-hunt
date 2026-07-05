@@ -24,21 +24,36 @@ class GroqLLM:
             )
 
     def chat(self, system: str, user: str, temperature: float = 0.2) -> str:
-        response = requests.post(
-            config.GROQ_API_URL,
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json={
-                "model": self.model,
-                "temperature": temperature,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-            },
-            timeout=config.REQUEST_TIMEOUT,
-        )
-        response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        import time
+        max_retries = 4
+        backoff_seconds = 2.0
+        
+        for attempt in range(max_retries):
+            response = requests.post(
+                config.GROQ_API_URL,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json={
+                    "model": self.model,
+                    "temperature": temperature,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                },
+                timeout=config.REQUEST_TIMEOUT,
+            )
+            
+            # If hit rate limit (429), wait and retry
+            if response.status_code == 429 and attempt < max_retries - 1:
+                # Get retry-after header if provided, else use backoff
+                retry_after = response.headers.get("Retry-After")
+                sleep_time = float(retry_after) if (retry_after and retry_after.isdigit()) else backoff_seconds
+                time.sleep(sleep_time)
+                backoff_seconds *= 2.0
+                continue
+                
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
 
 
 def extract_json(text: str) -> dict:

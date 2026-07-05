@@ -1,0 +1,482 @@
+import os
+import tempfile
+import threading
+import time
+import queue
+import logging
+import streamlit as st
+import pandas as pd
+
+from job_hunter.orchestrator import ResumeJobOrchestrator
+from job_hunter.models import JobSearchCriteria
+
+# Streamlit App Configurations
+st.set_page_config(
+    page_title="AI Job Hunter Dashboard",
+    page_icon="💼",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom Premium Styling
+st.markdown("""
+<style>
+    .main-header {
+        font-family: 'Outfit', 'Inter', sans-serif;
+        font-size: 2.8rem;
+        font-weight: 800;
+        background: linear-gradient(135deg, #3A1C71 0%, #D76D77 50%, #FFAF7B 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 0.5rem;
+    }
+    .sub-header {
+        font-family: 'Inter', sans-serif;
+        font-size: 1.1rem;
+        color: #A0AEC0;
+        margin-bottom: 2rem;
+    }
+    .metric-box {
+        background-color: #1A202C;
+        border: 1px solid #2D3748;
+        border-radius: 12px;
+        padding: 1.5rem;
+        text-align: center;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        transition: transform 0.2s ease-in-out;
+    }
+    .metric-box:hover {
+        transform: translateY(-2px);
+        border-color: #4A5568;
+    }
+    .metric-val {
+        font-size: 2rem;
+        font-weight: 700;
+        color: #ED8936;
+    }
+    .metric-label {
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: #718096;
+        margin-top: 0.5rem;
+    }
+    .badge-strong {
+        background-color: #22543D;
+        color: #C6F6D5;
+        padding: 0.25rem 0.75rem;
+        border-radius: 9999px;
+        font-weight: 600;
+        font-size: 0.85rem;
+    }
+    .badge-decent {
+        background-color: #744210;
+        color: #FEFCBF;
+        padding: 0.25rem 0.75rem;
+        border-radius: 9999px;
+        font-weight: 600;
+        font-size: 0.85rem;
+    }
+    .badge-weak {
+        background-color: #742A2A;
+        color: #FED7D7;
+        padding: 0.25rem 0.75rem;
+        border-radius: 9999px;
+        font-weight: 600;
+        font-size: 0.85rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ----------------- SESSION STATE SETUP -----------------
+if "result" not in st.session_state:
+    st.session_state.result = None
+if "logs" not in st.session_state:
+    st.session_state.logs = []
+if "running" not in st.session_state:
+    st.session_state.running = False
+if "log_queue" not in st.session_state:
+    st.session_state.log_queue = queue.Queue()
+
+# ----------------- LOGGING INTERCEPTOR -----------------
+class StreamlitLogHandler(logging.Handler):
+    def __init__(self, log_queue):
+        super().__init__()
+        self.log_queue = log_queue
+
+    def emit(self, record):
+        log_entry = self.format(record)
+        self.log_queue.put(log_entry)
+
+# Avoid adding multiple duplicate handlers
+jh_logger = logging.getLogger("job_hunter")
+jh_logger.setLevel(logging.INFO)
+# Clear old custom handlers if any
+for h in list(jh_logger.handlers):
+    if h.__class__.__name__ == "StreamlitLogHandler":
+        jh_logger.removeHandler(h)
+
+handler = StreamlitLogHandler(st.session_state.log_queue)
+handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s", datefmt="%H:%M:%S"))
+jh_logger.addHandler(handler)
+jh_logger.propagate = False # Prevent double printing to stdout/stderr in streamlit logs
+
+# Helper for badges
+def get_fit_badge_html(decision):
+    if decision == "Strong Fit":
+        return '<span class="badge-strong">Strong Fit</span>'
+    elif decision == "Decent Fit":
+        return '<span class="badge-decent">Decent Fit</span>'
+    else:
+        return '<span class="badge-weak">Weak Fit</span>'
+
+# ----------------- UI LAYOUT -----------------
+st.markdown('<div class="main-header">💼 AI Job Hunter</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Upload your resume, define criteria, and watch the AI search & vet matching jobs in real-time.</div>', unsafe_allow_html=True)
+
+# --- SIDEBAR: Configuration & Upload ---
+st.sidebar.header("🎯 Job Search Settings")
+
+uploaded_file = st.sidebar.file_uploader(
+    "Upload Resume (.pdf, .txt, .md)", 
+    type=["pdf", "txt", "md"],
+    help="Upload your resume. The AI will extract your skills, summary, and target job titles."
+)
+
+st.sidebar.subheader("🔍 Filters & Options")
+
+# Locations
+locations_input = st.sidebar.text_input(
+    "Preferred Locations", 
+    value="Remote", 
+    help="Comma-separated list of locations (e.g. Remote, Germany, London)"
+)
+locations = [loc.strip() for loc in locations_input.split(",") if loc.strip()]
+
+# Keywords
+keywords_input = st.sidebar.text_input(
+    "Extra Search Keywords", 
+    value="", 
+    help="Comma-separated extra search terms to force (e.g. PyTorch, React)"
+)
+keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
+
+# Remote only
+remote_only = st.sidebar.checkbox(
+    "Remote Only", 
+    value=True,
+    help="If checked, only lists jobs with 'remote' in the description or location."
+)
+
+# Target India Only
+target_india_only = st.sidebar.checkbox(
+    "Target India Jobs Only",
+    value=True,
+    help="If checked, skips foreign-only boards (Remotive, RemoteOK, Arbeitnow) and searches Indian portals (Naukri, Instahyre, Internshala, Cuvette, Wellfound, LinkedIn India, Indeed India) using regional filters for the latest jobs in the past month."
+)
+
+# Max evals (Cost control)
+max_evals = st.sidebar.slider(
+    "Max Vetting Evaluations", 
+    min_value=5, 
+    max_value=100, 
+    value=15, 
+    step=5,
+    help="Limits the number of parallel LLM calls to screen jobs. Helps stay within Groq rate limits."
+)
+
+# Minimum salary
+min_salary = st.sidebar.number_input(
+    "Minimum Annual Salary ($)", 
+    min_value=0, 
+    value=0, 
+    step=10000,
+    help="Threshold to filter jobs by salary, if available in the job post."
+)
+
+# Start button
+start_button = st.sidebar.button(
+    "🚀 Start Agent Job Search", 
+    disabled=st.session_state.running or uploaded_file is None,
+    use_container_width=True
+)
+
+if uploaded_file is None:
+    st.sidebar.warning("⚠️ Please upload a resume to enable search.")
+
+# --- MAIN WORKSPACE TABS ---
+tab_dashboard, tab_jobs, tab_profile = st.tabs([
+    "📈 Run Dashboard", 
+    "💼 Vetted Job Matches", 
+    "👤 Candidate Profile"
+])
+
+# ----------------- TAB 1: RUN DASHBOARD -----------------
+with tab_dashboard:
+    if start_button and uploaded_file is not None:
+        # Reset state
+        st.session_state.result = None
+        st.session_state.logs = []
+        st.session_state.running = True
+        
+        # Clear out queue
+        while not st.session_state.log_queue.empty():
+            try:
+                st.session_state.log_queue.get_nowait()
+            except queue.Empty:
+                break
+        
+        # Save uploaded file to a temporary file
+        file_suffix = os.path.splitext(uploaded_file.name)[1]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_suffix) as tmp:
+            tmp.write(uploaded_file.getvalue())
+            tmp_path = tmp.name
+        
+        # Prep criteria
+        criteria = JobSearchCriteria(
+            keywords=keywords,
+            locations=locations,
+            remote_only=remote_only,
+            min_salary=min_salary if min_salary > 0 else None,
+            target_india_only=target_india_only
+        )
+        
+        # Output excel path
+        output_dir = "outputs"
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, "job_matches.xlsx")
+        
+        # Define background execution target
+        result_holder = {}
+        def execution_thread():
+            try:
+                orchestrator = ResumeJobOrchestrator()
+                res = orchestrator.run(
+                    resume_path=tmp_path,
+                    criteria=criteria,
+                    max_evals=max_evals,
+                    output_path=output_path
+                )
+                result_holder["result"] = res
+            except Exception as e:
+                result_holder["error"] = e
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+        # Start thread
+        thread = threading.Thread(target=execution_thread)
+        thread.start()
+        
+        # UI components during run
+        st.info("🤖 **Agent Pipeline is Running...** Check logs and tabs for updates!")
+        progress_bar = st.progress(0.1)
+        status_text = st.empty()
+        log_code_box = st.empty()
+        
+        # Stream logs & wait for complete
+        while thread.is_alive():
+            # Pull any new logs
+            while not st.session_state.log_queue.empty():
+                st.session_state.logs.append(st.session_state.log_queue.get())
+            
+            # Simple progress heuristics
+            log_str = "\n".join(st.session_state.logs)
+            if "Phase 4" in log_str:
+                progress_bar.progress(0.9)
+                status_text.write("Writing report and saving results...")
+            elif "Phase 3" in log_str:
+                progress_bar.progress(0.6)
+                status_text.write("Vetting job listings against candidate profile using Groq LLM...")
+            elif "Phase 2" in log_str:
+                progress_bar.progress(0.3)
+                status_text.write("Querying job boards (Arbeitnow, Remotive, RemoteOK, Bing)...")
+            else:
+                progress_bar.progress(0.15)
+                status_text.write("Parsing resume and generating search terms...")
+                
+            log_code_box.code(log_str[-8000:]) # Limit visible characters for performance
+            time.sleep(0.2)
+            
+        thread.join()
+        
+        # Fetch final logs
+        while not st.session_state.log_queue.empty():
+            st.session_state.logs.append(st.session_state.log_queue.get())
+        log_code_box.code("\n".join(st.session_state.logs))
+        progress_bar.progress(1.0)
+        
+        st.session_state.running = False
+        
+        if "error" in result_holder:
+            st.error(f"❌ Job search failed: {result_holder['error']}")
+        else:
+            st.success("🎉 Job Search completed successfully!")
+            st.session_state.result = result_holder["result"]
+            
+    # Show stats / summary if result exists
+    if st.session_state.result:
+        metrics = st.session_state.result["metrics"]
+        
+        st.subheader("📊 Execution Summary")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.markdown(f"""
+            <div class="metric-box">
+                <div class="metric-val">{metrics['total_found']}</div>
+                <div class="metric-label">Total Found</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with col2:
+            st.markdown(f"""
+            <div class="metric-box">
+                <div class="metric-val">{metrics['evaluated']}</div>
+                <div class="metric-label">Evaluated / Vetted</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with col3:
+            st.markdown(f"""
+            <div class="metric-box">
+                <div class="metric-val" style="color: #48BB78;">{metrics['strong_fits']}</div>
+                <div class="metric-label">Strong Fits</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with col4:
+            st.markdown(f"""
+            <div class="metric-box">
+                <div class="metric-val" style="color: #4299E1;">{metrics['elapsed_seconds']}s</div>
+                <div class="metric-label">Time Elapsed</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        st.write("")
+        st.subheader("📋 Final Action & Agent Log Output")
+        st.code("\n".join(st.session_state.logs))
+        
+        # Download Excel button
+        xls_path = st.session_state.result["output_path"]
+        if xls_path and os.path.exists(xls_path):
+            with open(xls_path, "rb") as f:
+                st.download_button(
+                    label="📥 Download Vetted Jobs Excel Report",
+                    data=f,
+                    file_name="job_matches.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+    else:
+        st.write("Configure settings in the sidebar and press **Start Agent Job Search** to begin!")
+
+# ----------------- TAB 2: VETTED JOB MATCHES -----------------
+with tab_jobs:
+    if st.session_state.result and st.session_state.result["jobs"]:
+        jobs = st.session_state.result["jobs"]
+        
+        st.subheader("🎯 Vetted Jobs List")
+        st.write("Below are the job listings found, vetted, and scored by the agent's LLM vetting process.")
+        
+        # Dataframe summary
+        df_list = []
+        for idx, job in enumerate(jobs):
+            df_list.append({
+                "Index": idx + 1,
+                "Title": job.title,
+                "Company": job.company or "Unknown",
+                "Location": job.location or "Unknown",
+                "Source": job.source,
+                "Fit Score": job.fit_score,
+                "Fit Decision": job.fit_decision
+            })
+        df = pd.DataFrame(df_list)
+        st.dataframe(df.set_index("Index"), use_container_width=True)
+        
+        st.write("---")
+        st.subheader("🔍 Deep-Dive: Action & Reasoning Details")
+        st.info("Click on any job listing below to see the LLM's detailed reasoning, requirements fit, and gaps identified.")
+        
+        for idx, job in enumerate(jobs):
+            # Design header with inline CSS
+            badge_html = get_fit_badge_html(job.fit_decision)
+            header_text = f"**{job.title}** at **{job.company}** — Score: `{int(job.fit_score)}/100`"
+            
+            with st.expander(f"{idx+1}. {job.title} ({job.company}) — {job.fit_decision} ({int(job.fit_score)}/100)"):
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    st.markdown(f"### {job.title}")
+                    st.markdown(f"**Company:** {job.company or 'Unknown'} | **Location:** {job.location or 'Unknown'}")
+                    st.markdown(f"**Source:** `{job.source}` | [Open Original Listing]({job.url})")
+                    
+                    st.markdown("#### 💡 Agent Fit Reasons")
+                    if job.fit_reasons:
+                        for r in job.fit_reasons:
+                            st.write(f"✅ {r}")
+                    else:
+                        st.write("_No fit reasons provided._")
+                        
+                    st.markdown("#### ⚠️ Identified Gaps")
+                    if job.gaps_identified:
+                        for g in job.gaps_identified:
+                            st.write(f"🔍 {g}")
+                    else:
+                        st.write("_No gaps identified! Excellent match._")
+                
+                with col2:
+                    st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
+                    st.markdown(f"#### Fit Decision")
+                    st.markdown(f"<div style='font-size:1.5rem; margin-bottom:1rem;'>{badge_html}</div>", unsafe_allow_html=True)
+                    st.metric("Fit Score", f"{int(job.fit_score)}/100")
+                    st.markdown("</div>", unsafe_allow_html=True)
+                
+                st.markdown("---")
+                st.markdown("**Job Description Preview:**")
+                st.text_area("Description Text", job.description, height=200, disabled=True, key=f"desc_{idx}")
+                
+    elif st.session_state.result:
+        st.info("No matching jobs passed pre-filtering or vetting.")
+    else:
+        st.info("Please run the search first to inspect the matching jobs.")
+
+# ----------------- TAB 3: CANDIDATE PROFILE -----------------
+with tab_profile:
+    if st.session_state.result and st.session_state.result["profile"]:
+        profile = st.session_state.result["profile"]
+        
+        st.subheader("👤 Extracted Candidate Profile")
+        st.write("This is the candidate profile generated by the `ResumeAnalyzer` agent from your uploaded resume.")
+        
+        st.markdown("### 📝 Professional Summary")
+        st.write(profile.summary)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("### 🏆 Extracted Seniority")
+            st.markdown(f"**{profile.seniority}**")
+            
+            st.markdown("### 🎯 Recommended Target Job Titles")
+            for t in profile.job_titles:
+                st.markdown(f"- {t}")
+        
+        with col2:
+            st.markdown("### 🔍 Optimized Search Queries")
+            for q in profile.search_queries:
+                st.markdown(f"- `{q}`")
+                
+        st.markdown("### 🛠️ Extracted Skills")
+        skills_html = "".join([f'<span style="background-color: #2D3748; color: #E2E8F0; padding: 0.3rem 0.6rem; border-radius: 6px; margin: 0.2rem; display: inline-block; font-size: 0.9rem;">{skill}</span>' for skill in profile.skills])
+        st.markdown(skills_html, unsafe_allow_html=True)
+        
+        st.write("")
+        with st.expander("📄 Raw Extracted Text"):
+            st.text_area("Raw text", profile.raw_text, height=400, disabled=True)
+            
+    elif st.session_state.result:
+        st.warning("Candidate profile extraction details are missing.")
+    else:
+        st.info("Upload your resume and run the search to view your extracted profile.")

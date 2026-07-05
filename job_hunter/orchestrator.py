@@ -41,6 +41,13 @@ class ResumeJobOrchestrator:
         criteria = criteria or JobSearchCriteria()
         self.blackboard["criteria"] = criteria
 
+        # Setup sources dynamically based on criteria
+        if criteria.target_india_only:
+            log.info("Targeting India jobs only. Using PlatformSearcher with India configuration.")
+            self.sources = [PlatformSearcher(target_india_only=True)]
+        else:
+            self.sources = [PlatformSearcher(target_india_only=False), RemotiveAgent(), RemoteOKAgent(), ArbeitnowAgent()]
+
         # Phase 1 (Ingest): resume -> CandidateProfile on the blackboard.
         log.info("Phase 1: analyzing resume %s", resume_path)
         profile = self.analyzer.analyze(resume_path)
@@ -76,7 +83,11 @@ class ResumeJobOrchestrator:
 
         # Phase 4 (Reporting): styled Excel export.
         log.info("Phase 4: writing report")
-        path = write_excel(profile, candidates, output_path)
+        try:
+            path = write_excel(profile, candidates, output_path)
+        except Exception as exc:
+            log.warning("Could not write Excel report: %s. Continuing without saving to file.", exc)
+            path = ""
 
         metrics = {
             "total_found": len(jobs),

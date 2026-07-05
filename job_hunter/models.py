@@ -13,6 +13,7 @@ class JobSearchCriteria:
     remote_only: bool = False
     min_salary: Optional[int] = None
     max_results_per_source: int = 25
+    target_india_only: bool = False
 
 
 @dataclass
