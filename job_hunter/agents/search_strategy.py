@@ -19,8 +19,8 @@ Format the response as a JSON object with a single key "search_queries" mapping 
 
 Guidelines for generating queries:
 1. Leverage the candidate's core skills, tools, and preferred target titles.
-2. Use Boolean logic where appropriate (e.g. OR, AND) or standard space-separated keywords depending on target areas (e.g. `(Python OR Backend) AND (Django OR FastAPI)`).
-3. Tailor queries to target different aspects of the candidate's skillset (e.g., one backend/general query, one framework-specific/specialized query, one database/cloud query).
+2. Use simple, direct, space-separated keyword phrases (e.g., "AI Developer Python PyTorch" or "Backend Developer Django FastAPI"). Do NOT use complex nested Boolean logic (AND/OR/NOT) or multiple parentheses, as search engines will fail or return zero results.
+3. Tailor queries to target different aspects of the candidate's skillset (e.g., one general tech role, one framework/tool-specific query, one specialty query).
 4. Keep seniority in mind (e.g. if seniority is "Junior", incorporate "junior" or "intern" terms into the query variations).
 
 Candidate Profile:

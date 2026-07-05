@@ -11,6 +11,7 @@ from .agents.platform_searcher import PlatformSearcher
 from .agents.resume_analyzer import ResumeAnalyzer
 from .agents.search_strategy import SearchStrategyAgent
 from .agents.vetting import MatchVettingAgent
+from .agents.ats_agent import DirectATSAgent
 from .models import CandidateProfile, JobListing, JobSearchCriteria
 from .writer import write_excel
 
@@ -29,7 +30,7 @@ class ResumeJobOrchestrator:
         self.blackboard = {"criteria": None, "profile": None, "jobs": [], "metrics": {}}
         self.analyzer = ResumeAnalyzer(self.llm)
         self.strategy_agent = SearchStrategyAgent(self.llm)
-        self.sources = [PlatformSearcher(), RemotiveAgent(), RemoteOKAgent(), ArbeitnowAgent(), AdzunaAgent()]
+        self.sources = [PlatformSearcher(), RemotiveAgent(), RemoteOKAgent(), ArbeitnowAgent(), AdzunaAgent(), DirectATSAgent()]
         self.vetter = MatchVettingAgent(self.llm)
 
     def run(
@@ -45,8 +46,8 @@ class ResumeJobOrchestrator:
 
         # Setup sources dynamically based on criteria
         if criteria.target_india_only:
-            log.info("Targeting India jobs only. Using PlatformSearcher and Adzuna with India configuration.")
-            self.sources = [PlatformSearcher(target_india_only=True), AdzunaAgent()]
+            log.info("Targeting India jobs only. Using PlatformSearcher, Adzuna, and DirectATSAgent.")
+            self.sources = [PlatformSearcher(target_india_only=True), AdzunaAgent(), DirectATSAgent()]
         else:
             self.sources = [
                 PlatformSearcher(target_india_only=False),
@@ -54,6 +55,7 @@ class ResumeJobOrchestrator:
                 RemoteOKAgent(),
                 ArbeitnowAgent(),
                 AdzunaAgent(),
+                DirectATSAgent(),
             ]
 
         # Phase 1 (Ingest): resume -> CandidateProfile on the blackboard.

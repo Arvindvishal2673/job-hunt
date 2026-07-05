@@ -80,16 +80,15 @@ class PlatformSearcher(JobSourceAgent):
 
         tasks = []
         for query in queries:
-            for group in self._site_groups():
-                sites = " OR ".join(f"site:{d}" for d in group)
-                tasks.append(f"{query} ({sites})")
+            tasks.append(f"{query} jobs")
 
         # Set up region and time limits dynamically
         region = "in-en" if self.target_india_only else "wt-wt"
         timelimit = "m" if self.target_india_only else None  # "m" gets jobs posted in the past month
 
         listings: List[JobListing] = []
-        with ThreadPoolExecutor(max_workers=6) as pool:
+        # Use lower worker count (max_workers=2) to serialize queries and prevent rate limits
+        with ThreadPoolExecutor(max_workers=2) as pool:
             futures = {
                 pool.submit(self._run_query, t, max_results, region, timelimit): t 
                 for t in tasks
@@ -103,6 +102,11 @@ class PlatformSearcher(JobSourceAgent):
 
     def _run_query(self, query: str, max_results: int, region: str, timelimit: str) -> List[JobListing]:
         from duckduckgo_search import DDGS
+        import time
+        import random
+
+        # Introduce random delay to prevent IP rate-limiting by the search engine
+        time.sleep(random.uniform(1.5, 3.5))
 
         results = []
         with DDGS() as ddgs:

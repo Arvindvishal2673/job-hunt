@@ -72,3 +72,24 @@ def test_platform_searcher_includes_new_domains():
     assert "shine.com" in domains
     assert "hirist.tech" in domains
     assert "timesjobs.com" in domains
+
+
+def test_direct_ats_agent_parses_successfully():
+    from job_hunter.agents.ats_agent import DirectATSAgent
+    with patch("requests.get") as mock_get:
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.side_effect = [
+            {"jobs": [{"title": "Frontend Engineer", "content": "React Developer", "absolute_url": "https://greenhouse/groww/1", "location": {"name": "Bengaluru"}}]},
+            [{"title": "Backend Developer", "description": "Python Engineer", "applyUrl": "https://lever/cred/2", "categories": {"location": "Bengaluru"}, "lists": []}],
+        ]
+        
+        agent = DirectATSAgent()
+        with patch("job_hunter.agents.ats_agent.GREENHOUSE_COMPANIES", [("groww", "Groww")]), \
+             patch("job_hunter.agents.ats_agent.LEVER_COMPANIES", [("cred", "CRED")]):
+            results = agent.search(["python", "react"])
+            assert len(results) == 2
+            assert results[0].company == "Groww"
+            assert results[0].title == "Frontend Engineer"
+            assert results[1].company == "CRED"
+            assert results[1].title == "Backend Developer"
+
