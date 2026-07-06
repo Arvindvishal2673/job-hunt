@@ -123,8 +123,8 @@ class ApifyLinkedInAgent(JobSourceAgent):
             title = item.get("positionName") or item.get("title") or item.get("jobTitle") or ""
             company = item.get("companyName") or item.get("company") or ""
             location_val = item.get("location") or item.get("locationName") or ""
-            url = item.get("jobUrl") or item.get("url") or ""
-            desc = item.get("description") or item.get("descriptionText") or ""
+            url = item.get("link") or item.get("jobUrl") or item.get("url") or ""
+            desc = item.get("descriptionText") or item.get("description") or item.get("descriptionHtml") or ""
 
             if not title or not url:
                 continue  # Skip invalid or incomplete listings
