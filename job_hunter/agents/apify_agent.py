@@ -37,14 +37,21 @@ class ApifyLinkedInAgent(JobSourceAgent):
         # Determine target location based on criteria
         location = "India" if self.target_india_only else "United States"
 
+        import urllib.parse
+        urls = []
+        for query in queries:
+            q_escaped = urllib.parse.quote(query)
+            l_escaped = urllib.parse.quote(location)
+            urls.append(f"https://www.linkedin.com/jobs/search/?keywords={q_escaped}&location={l_escaped}")
+
         payload = {
-            "searchQueries": queries,
-            "locationName": location,
-            "maxItems": max_results,
-            "scrapeCompanyDetails": False
+            "urls": urls,
+            "scrapeCompany": False,
+            "count": max_results,
+            "splitByLocation": False
         }
 
-        log.info("Triggering Apify LinkedIn Jobs Scraper (location: %s, queries: %s)...", location, queries)
+        log.info("Triggering Apify LinkedIn Jobs Scraper (location: %s, urls: %s)...", location, urls)
         try:
             res = requests.post(run_url, json=payload, timeout=config.REQUEST_TIMEOUT)
             res.raise_for_status()
