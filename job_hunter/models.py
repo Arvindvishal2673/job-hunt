@@ -26,6 +26,10 @@ class CandidateProfile:
     job_titles: List[str] = field(default_factory=list)
     search_queries: List[str] = field(default_factory=list)
     raw_text: str = ""
+    # Agentic metadata written by PlannerAgent and ReflectionAgent
+    activated_sources: List[str] = field(default_factory=list)
+    react_iterations: int = 0
+
 
 
 @dataclass

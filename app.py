@@ -288,11 +288,17 @@ with tab_dashboard:
                 progress_bar.progress(0.9)
                 status_text.write("Writing report and saving results...")
             elif "Phase 3" in log_str:
-                progress_bar.progress(0.6)
+                progress_bar.progress(0.7)
                 status_text.write("Vetting job listings against candidate profile using Groq LLM...")
+            elif "ReAct iteration" in log_str:
+                progress_bar.progress(0.55)
+                status_text.write("🔄 ReAct loop: LLM is evaluating result quality and refining queries...")
+            elif "Phase 2a" in log_str:
+                progress_bar.progress(0.35)
+                status_text.write("🧠 PlannerAgent: LLM selecting optimal job sources via tool-calling...")
             elif "Phase 2" in log_str:
                 progress_bar.progress(0.3)
-                status_text.write("Querying job boards (Arbeitnow, Remotive, RemoteOK, LinkedIn via Apify)...")
+                status_text.write("Querying LLM-selected job boards in parallel...")
             else:
                 progress_bar.progress(0.15)
                 status_text.write("Parsing resume and generating search terms...")
@@ -321,7 +327,7 @@ with tab_dashboard:
         metrics = st.session_state.result["metrics"]
         
         st.subheader("📊 Execution Summary")
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
         
         with col1:
             st.markdown(f"""
@@ -352,6 +358,24 @@ with tab_dashboard:
             <div class="metric-box">
                 <div class="metric-val" style="color: #4299E1;">{metrics['elapsed_seconds']}s</div>
                 <div class="metric-label">Time Elapsed</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with col5:
+            sources_count = len(metrics.get('activated_sources', []))
+            st.markdown(f"""
+            <div class="metric-box">
+                <div class="metric-val" style="color: #B794F4;">{sources_count}</div>
+                <div class="metric-label">Sources (LLM Picked)</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with col6:
+            react_iters = metrics.get('react_iterations', 0)
+            st.markdown(f"""
+            <div class="metric-box">
+                <div class="metric-val" style="color: #F6AD55;">{react_iters}</div>
+                <div class="metric-label">ReAct Iterations</div>
             </div>
             """, unsafe_allow_html=True)
             
@@ -471,6 +495,20 @@ with tab_profile:
         st.markdown("### 🛠️ Extracted Skills")
         skills_html = "".join([f'<span style="background-color: #2D3748; color: #E2E8F0; padding: 0.3rem 0.6rem; border-radius: 6px; margin: 0.2rem; display: inline-block; font-size: 0.9rem;">{skill}</span>' for skill in profile.skills])
         st.markdown(skills_html, unsafe_allow_html=True)
+
+        st.markdown("### 🤖 Agentic Decisions")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("**🧠 LLM-Selected Job Sources** *(PlannerAgent)*")
+            if profile.activated_sources:
+                for src in profile.activated_sources:
+                    st.markdown(f"- `{src}`")
+            else:
+                st.write("_Not available (run search first)._")
+        with col_b:
+            st.markdown("**🔄 ReAct Loop Iterations** *(ReflectionAgent)*")
+            st.metric("Total Iterations", profile.react_iterations)
+            st.caption("Each iteration the LLM observed results and decided to refine or proceed.")
         
         st.write("")
         with st.expander("📄 Raw Extracted Text"):

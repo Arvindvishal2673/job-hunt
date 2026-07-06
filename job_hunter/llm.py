@@ -2,6 +2,8 @@
 
 import json
 import re
+import time
+from typing import List, Optional
 
 import requests
 
@@ -23,37 +25,89 @@ class GroqLLM:
                 "GROQ_API_KEY is not set. Copy .env.example to .env and add your key."
             )
 
-    def chat(self, system: str, user: str, temperature: float = 0.2) -> str:
-        import time
-        max_retries = 4
-        backoff_seconds = 2.0
-        
+    def _post(self, payload: dict, max_retries: int = 4) -> dict:
+        """Internal helper: POST to Groq with exponential backoff on 429."""
+        backoff = 2.0
         for attempt in range(max_retries):
             response = requests.post(
                 config.GROQ_API_URL,
                 headers={"Authorization": f"Bearer {self.api_key}"},
-                json={
-                    "model": self.model,
-                    "temperature": temperature,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                },
+                json=payload,
                 timeout=config.REQUEST_TIMEOUT,
             )
-            
-            # If hit rate limit (429), wait and retry
             if response.status_code == 429 and attempt < max_retries - 1:
-                # Get retry-after header if provided, else use backoff
                 retry_after = response.headers.get("Retry-After")
-                sleep_time = float(retry_after) if (retry_after and retry_after.isdigit()) else backoff_seconds
+                sleep_time = float(retry_after) if (retry_after and retry_after.isdigit()) else backoff
                 time.sleep(sleep_time)
-                backoff_seconds *= 2.0
+                backoff *= 2.0
                 continue
-                
             response.raise_for_status()
-            return response.json()["choices"][0]["message"]["content"]
+            return response.json()
+        response.raise_for_status()  # final raise after retries exhausted
+
+    def chat(self, system: str, user: str, temperature: float = 0.2) -> str:
+        """Simple single-turn chat. Returns the assistant message content."""
+        data = self._post({
+            "model": self.model,
+            "temperature": temperature,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        })
+        return data["choices"][0]["message"]["content"]
+
+    def chat_multi_turn(self, messages: List[dict], temperature: float = 0.2) -> str:
+        """Multi-turn chat supporting full message history (for ReAct loops).
+
+        Args:
+            messages: List of {"role": "system"|"user"|"assistant", "content": str}
+
+        Returns:
+            The assistant's reply as a plain string.
+        """
+        data = self._post({
+            "model": self.model,
+            "temperature": temperature,
+            "messages": messages,
+        })
+        return data["choices"][0]["message"]["content"]
+
+    def chat_with_tools(
+        self,
+        system: str,
+        user: str,
+        tools: List[dict],
+        temperature: float = 0.0,
+    ) -> Optional[List[dict]]:
+        """Tool-calling (function-calling) via Groq's OpenAI-compatible API.
+
+        Sends the tools schema to the LLM and returns the list of tool_calls
+        selected by the model, or None if the model replied with plain text.
+
+        Args:
+            system:      System prompt.
+            user:        User message.
+            tools:       List of OpenAI-format tool schemas.
+            temperature: Lower is more deterministic (default 0.0 for planning).
+
+        Returns:
+            List of tool_call dicts like:
+            [{"id": "...", "function": {"name": "...", "arguments": "{}"}}]
+            or None if the model chose not to call any tool.
+        """
+        data = self._post({
+            "model": self.model,
+            "temperature": temperature,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "tools": tools,
+            "tool_choice": "auto",
+        })
+        message = data["choices"][0]["message"]
+        return message.get("tool_calls") or None
 
 
 def extract_json(text: str) -> dict:
@@ -62,3 +116,4 @@ def extract_json(text: str) -> dict:
     if not match:
         raise ValueError("No JSON object found in LLM response")
     return json.loads(match.group(0))
+

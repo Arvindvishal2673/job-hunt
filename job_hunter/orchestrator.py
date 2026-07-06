@@ -1,4 +1,14 @@
-"""Central Orchestrator agent implementing the blackboard state-passing pattern."""
+"""Central Orchestrator implementing the full agentic pipeline.
+
+Pipeline phases:
+  1.   Resume → CandidateProfile  (ResumeAnalyzer)
+  1.5  Profile → Search Queries   (SearchStrategyAgent)
+  2a.  Profile → Source Selection (PlannerAgent — LLM tool-calling)
+  2.   Parallel job ingestion from LLM-selected sources
+  2b.  ReAct loop: Observe results → Reason → Act (refine or done)
+  3.   Dedupe → Pre-filter → Parallel LLM vetting (MatchVettingAgent)
+  4.   Styled Excel export
+"""
 
 import logging
 import time
@@ -8,10 +18,12 @@ from typing import List
 from . import config
 from .agents.api_agents import AdzunaAgent, ArbeitnowAgent, RemoteOKAgent, RemotiveAgent
 from .agents.apify_agent import ApifyLinkedInAgent
+from .agents.ats_agent import DirectATSAgent
+from .agents.planner import PlannerAgent
+from .agents.reflector import ReflectionAgent, MAX_REACT_ITERATIONS
 from .agents.resume_analyzer import ResumeAnalyzer
 from .agents.search_strategy import SearchStrategyAgent
 from .agents.vetting import MatchVettingAgent
-from .agents.ats_agent import DirectATSAgent
 from .models import CandidateProfile, JobListing, JobSearchCriteria
 from .writer import write_excel
 
@@ -19,19 +31,59 @@ log = logging.getLogger(__name__)
 
 
 class ResumeJobOrchestrator:
-    """Coordinates ingestion, parallel querying, dedupe, pre-filter, vetting and reporting."""
+    """Coordinates all agents via the blackboard state-passing pattern."""
 
     def __init__(self, llm=None):
         if llm is None:
             from .llm import GroqLLM
-
             llm = GroqLLM()
         self.llm = llm
         self.blackboard = {"criteria": None, "profile": None, "jobs": [], "metrics": {}}
         self.analyzer = ResumeAnalyzer(self.llm)
         self.strategy_agent = SearchStrategyAgent(self.llm)
-        self.sources = [ApifyLinkedInAgent(), RemotiveAgent(), RemoteOKAgent(), ArbeitnowAgent(), AdzunaAgent(), DirectATSAgent()]
+        self.planner = PlannerAgent(self.llm)
+        self.reflector = ReflectionAgent(self.llm)
         self.vetter = MatchVettingAgent(self.llm)
+
+    def _build_all_sources(self, target_india_only: bool) -> list:
+        """Construct the full pool of source agents the planner can choose from."""
+        if target_india_only:
+            return [
+                ApifyLinkedInAgent(target_india_only=True),
+                AdzunaAgent(),
+                DirectATSAgent(),
+            ]
+        return [
+            ApifyLinkedInAgent(target_india_only=False),
+            RemotiveAgent(),
+            RemoteOKAgent(),
+            ArbeitnowAgent(),
+            AdzunaAgent(),
+            DirectATSAgent(),
+        ]
+
+    def _run_sources_parallel(
+        self,
+        sources: list,
+        queries: List[str],
+        max_results: int,
+    ) -> List[JobListing]:
+        """Run a set of source agents in parallel and collect all results."""
+        jobs: List[JobListing] = []
+        with ThreadPoolExecutor(max_workers=len(sources)) as pool:
+            futures = {
+                pool.submit(source.search, queries, max_results): source
+                for source in sources
+            }
+            for future in as_completed(futures):
+                source = futures[future]
+                try:
+                    found = future.result()
+                    log.info("%s returned %d listings", source.name, len(found))
+                    jobs.extend(found)
+                except Exception as exc:
+                    log.warning("Source %s failed: %s", source.name, exc)
+        return jobs
 
     def run(
         self,
@@ -44,50 +96,65 @@ class ResumeJobOrchestrator:
         criteria = criteria or JobSearchCriteria()
         self.blackboard["criteria"] = criteria
 
-        # Setup sources dynamically based on criteria
-        if criteria.target_india_only:
-            log.info("Targeting India jobs only. Using ApifyLinkedInAgent, Adzuna, and DirectATSAgent.")
-            self.sources = [ApifyLinkedInAgent(target_india_only=True), AdzunaAgent(), DirectATSAgent()]
-        else:
-            self.sources = [
-                ApifyLinkedInAgent(target_india_only=False),
-                RemotiveAgent(),
-                RemoteOKAgent(),
-                ArbeitnowAgent(),
-                AdzunaAgent(),
-                DirectATSAgent(),
-            ]
-
-        # Phase 1 (Ingest): resume -> CandidateProfile on the blackboard.
+        # ── Phase 1: Resume → CandidateProfile ───────────────────────────────
         log.info("Phase 1: analyzing resume %s", resume_path)
-        profile = self.analyzer.analyze(resume_path)
-        
-        # Phase 1.5: Generate Search Strategy
+        profile: CandidateProfile = self.analyzer.analyze(resume_path)
+
+        # ── Phase 1.5: Profile → Search Queries ──────────────────────────────
         log.info("Phase 1.5: generating search strategy")
         profile.search_queries = self.strategy_agent.generate_queries(profile)
-        
         self.blackboard["profile"] = profile
         queries = profile.search_queries or profile.job_titles or criteria.keywords
-        log.info("Search queries: %s", queries)
+        log.info("Initial search queries: %s", queries)
 
-        # Phase 2 (Querying): all source agents run in parallel.
-        log.info("Phase 2: querying %d sources in parallel", len(self.sources))
-        jobs: List[JobListing] = []
-        with ThreadPoolExecutor(max_workers=len(self.sources)) as pool:
-            futures = {
-                pool.submit(source.search, queries, criteria.max_results_per_source): source
-                for source in self.sources
-            }
-            for future in as_completed(futures):
-                source = futures[future]
-                try:
-                    found = future.result()
-                    log.info("%s returned %d listings", source.name, len(found))
-                    jobs.extend(found)
-                except Exception as exc:
-                    log.warning("Source %s failed: %s", source.name, exc)
+        # ── Phase 2a: PlannerAgent selects which sources to activate ─────────
+        log.info("Phase 2a: PlannerAgent selecting job sources via tool-calling...")
+        all_sources = self._build_all_sources(criteria.target_india_only)
+        active_sources = self.planner.select_sources(
+            profile, all_sources, criteria.target_india_only
+        )
+        profile.activated_sources = [type(s).__name__ for s in active_sources]
+        log.info(
+            "Phase 2a complete. LLM activated %d/%d sources: %s",
+            len(active_sources), len(all_sources), profile.activated_sources,
+        )
 
-        # Phase 3 (Filtering & Vetting): dedupe, pre-filter, then parallel LLM screens.
+        # ── Phase 2: Parallel ingestion with ReAct refinement loop ───────────
+        log.info("Phase 2: querying %d sources in parallel", len(active_sources))
+        jobs: List[JobListing] = self._run_sources_parallel(
+            active_sources, queries, criteria.max_results_per_source
+        )
+
+        # ── Phase 2b: ReAct Observe → Reason → Act loop ──────────────────────
+        for iteration in range(MAX_REACT_ITERATIONS):
+            action, new_queries = self.reflector.reflect(
+                profile, queries, jobs, iteration
+            )
+            profile.react_iterations = iteration + 1
+
+            if action == "done":
+                log.info("ReAct loop complete after %d iteration(s).", iteration + 1)
+                break
+
+            # action == "refine": update queries and search again
+            log.info(
+                "ReAct iteration %d: refining search with new queries: %s",
+                iteration + 1, new_queries,
+            )
+            queries = new_queries
+            profile.search_queries = new_queries
+            new_jobs = self._run_sources_parallel(
+                active_sources, queries, criteria.max_results_per_source
+            )
+            jobs.extend(new_jobs)
+            log.info(
+                "ReAct iteration %d: found %d additional listings (%d total so far)",
+                iteration + 1, len(new_jobs), len(jobs),
+            )
+        else:
+            log.info("ReAct loop reached max iterations (%d).", MAX_REACT_ITERATIONS)
+
+        # ── Phase 3: Dedupe → Pre-filter → Parallel LLM vetting ─────────────
         jobs = self.deduplicate(jobs)
         candidates = self.prefilter(jobs, profile, criteria)[:max_evals]
         log.info("Phase 3: vetting %d of %d unique listings", len(candidates), len(jobs))
@@ -96,12 +163,12 @@ class ResumeJobOrchestrator:
         candidates.sort(key=lambda job: job.fit_score, reverse=True)
         self.blackboard["jobs"] = candidates
 
-        # Phase 4 (Reporting): styled Excel export.
+        # ── Phase 4: Styled Excel export ─────────────────────────────────────
         log.info("Phase 4: writing report")
         try:
             path = write_excel(profile, candidates, output_path)
         except Exception as exc:
-            log.warning("Could not write Excel report: %s. Continuing without saving to file.", exc)
+            log.warning("Could not write Excel report: %s. Continuing without saving.", exc)
             path = ""
 
         metrics = {
@@ -110,6 +177,8 @@ class ResumeJobOrchestrator:
             "strong_fits": sum(1 for j in candidates if j.fit_decision == "Strong Fit"),
             "elapsed_seconds": round(time.time() - started, 1),
             "output_path": path,
+            "activated_sources": profile.activated_sources,
+            "react_iterations": profile.react_iterations,
         }
         self.blackboard["metrics"] = metrics
         return {"profile": profile, "jobs": candidates, "metrics": metrics, "output_path": path}
