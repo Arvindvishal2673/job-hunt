@@ -7,7 +7,7 @@ from typing import List
 
 from . import config
 from .agents.api_agents import AdzunaAgent, ArbeitnowAgent, RemoteOKAgent, RemotiveAgent
-from .agents.platform_searcher import PlatformSearcher
+from .agents.apify_agent import ApifyLinkedInAgent
 from .agents.resume_analyzer import ResumeAnalyzer
 from .agents.search_strategy import SearchStrategyAgent
 from .agents.vetting import MatchVettingAgent
@@ -30,7 +30,7 @@ class ResumeJobOrchestrator:
         self.blackboard = {"criteria": None, "profile": None, "jobs": [], "metrics": {}}
         self.analyzer = ResumeAnalyzer(self.llm)
         self.strategy_agent = SearchStrategyAgent(self.llm)
-        self.sources = [PlatformSearcher(), RemotiveAgent(), RemoteOKAgent(), ArbeitnowAgent(), AdzunaAgent(), DirectATSAgent()]
+        self.sources = [ApifyLinkedInAgent(), RemotiveAgent(), RemoteOKAgent(), ArbeitnowAgent(), AdzunaAgent(), DirectATSAgent()]
         self.vetter = MatchVettingAgent(self.llm)
 
     def run(
@@ -46,11 +46,11 @@ class ResumeJobOrchestrator:
 
         # Setup sources dynamically based on criteria
         if criteria.target_india_only:
-            log.info("Targeting India jobs only. Using PlatformSearcher, Adzuna, and DirectATSAgent.")
-            self.sources = [PlatformSearcher(target_india_only=True), AdzunaAgent(), DirectATSAgent()]
+            log.info("Targeting India jobs only. Using ApifyLinkedInAgent, Adzuna, and DirectATSAgent.")
+            self.sources = [ApifyLinkedInAgent(target_india_only=True), AdzunaAgent(), DirectATSAgent()]
         else:
             self.sources = [
-                PlatformSearcher(target_india_only=False),
+                ApifyLinkedInAgent(target_india_only=False),
                 RemotiveAgent(),
                 RemoteOKAgent(),
                 ArbeitnowAgent(),

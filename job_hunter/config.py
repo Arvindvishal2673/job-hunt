@@ -15,6 +15,8 @@ GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 ADZUNA_APP_ID = os.getenv("ADZUNA_APP_ID", "")
 ADZUNA_APP_KEY = os.getenv("ADZUNA_APP_KEY", "")
+APIFY_API_TOKEN = os.getenv("APIFY_API_TOKEN", "")
+
 
 REQUEST_TIMEOUT = 20
 MAX_EVALS_DEFAULT = 40

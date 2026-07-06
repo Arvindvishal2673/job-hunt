@@ -2,14 +2,11 @@
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from job_hunter.agents.platform_searcher import (
-    PLATFORM_DOMAINS,
-    PlatformSearcher,
-)
+from job_hunter.agents.apify_agent import ApifyLinkedInAgent
 from job_hunter.agents.resume_analyzer import ResumeAnalyzer
 from job_hunter.agents.search_strategy import SearchStrategyAgent
 from job_hunter.agents.vetting import MatchVettingAgent
@@ -29,23 +26,75 @@ def make_profile() -> CandidateProfile:
     )
 
 
-class TestPlatformMapping:
-    def test_known_domains(self):
-        searcher = PlatformSearcher()
-        assert searcher.domain_to_platform("https://www.linkedin.com/jobs/view/1") == "LinkedIn"
-        assert searcher.domain_to_platform("https://remoteok.com/remote-jobs/1") == "RemoteOK"
-        assert searcher.domain_to_platform("https://uk.indeed.com/viewjob?jk=1") == "Indeed"
+class TestApifyAgent:
+    def test_apify_skips_when_token_missing(self):
+        with patch("job_hunter.config.APIFY_API_TOKEN", ""):
+            agent = ApifyLinkedInAgent()
+            results = agent.search(["python"])
+            assert results == []
 
-    def test_unknown_domain_falls_back(self):
-        searcher = PlatformSearcher()
-        assert searcher.domain_to_platform("https://example.org/job") == "Web"
+    def test_apify_parses_results_successfully(self):
+        mock_run_data = {
+            "data": {
+                "id": "mock_run_123",
+                "defaultDatasetId": "mock_dataset_456"
+            }
+        }
+        mock_status_data = {
+            "data": {
+                "status": "SUCCEEDED"
+            }
+        }
+        mock_items_data = [
+            {
+                "positionName": "AI Engineer",
+                "companyName": "DeepMind",
+                "location": "London",
+                "jobUrl": "https://linkedin.com/jobs/view/999",
+                "description": "Python PyTorch developer"
+            }
+        ]
 
-    def test_site_groups_cover_all_15_platforms(self):
-        searcher = PlatformSearcher()
-        groups = searcher._site_groups()
-        flattened = [domain for group in groups for domain in group]
-        assert sorted(flattened) == sorted(PLATFORM_DOMAINS)
-        assert len(groups) == 3
+        with patch("job_hunter.config.APIFY_API_TOKEN", "mock_token"), \
+             patch("requests.post") as mock_post, \
+             patch("requests.get") as mock_get, \
+             patch("time.sleep"):  # bypass sleep delay
+             
+            # Mock trigger run POST
+            mock_post_res = MagicMock()
+            mock_post_res.json.return_value = mock_run_data
+            mock_post.return_value = mock_post_res
+            
+            # Mock get status GET and get dataset GET
+            mock_get_status_res = MagicMock()
+            mock_get_status_res.json.return_value = mock_status_data
+            
+            mock_get_items_res = MagicMock()
+            mock_get_items_res.json.return_value = mock_items_data
+            
+            mock_get.side_effect = [mock_get_status_res, mock_get_items_res]
+            
+            agent = ApifyLinkedInAgent()
+            results = agent.search(["python"])
+            
+            assert len(results) == 1
+            job = results[0]
+            assert job.title == "AI Engineer"
+            assert job.company == "DeepMind"
+            assert job.location == "London"
+            assert job.url == "https://linkedin.com/jobs/view/999"
+            assert job.source == "LinkedIn"
+            assert job.description == "Python PyTorch developer"
+
+    def test_apify_handles_trigger_failure(self):
+        with patch("job_hunter.config.APIFY_API_TOKEN", "mock_token"), \
+             patch("requests.post") as mock_post:
+             
+            mock_post.side_effect = Exception("API connection timed out")
+            agent = ApifyLinkedInAgent()
+            results = agent.search(["python"])
+            assert results == []
+
 
 
 class TestResumeAnalyzer:

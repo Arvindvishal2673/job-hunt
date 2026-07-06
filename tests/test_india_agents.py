@@ -3,7 +3,6 @@ from unittest.mock import patch, MagicMock
 import pytest
 from job_hunter.agents.api_agents import AdzunaAgent
 from job_hunter.models import JobListing
-from job_hunter.agents.platform_searcher import PlatformSearcher
 from job_hunter import config
 
 
@@ -62,16 +61,6 @@ def test_adzuna_agent_parses_results_successfully():
         assert job.source == "Adzuna"
         assert job.salary == "INR 500,000 - 800,000"
 
-
-def test_platform_searcher_includes_new_domains():
-    searcher = PlatformSearcher(target_india_only=True)
-    domains = searcher._get_domains()
-    assert "boards.greenhouse.io" in domains
-    assert "jobs.lever.co" in domains
-    assert "freshersworld.com" in domains
-    assert "shine.com" in domains
-    assert "hirist.tech" in domains
-    assert "timesjobs.com" in domains
 
 
 def test_direct_ats_agent_parses_successfully():

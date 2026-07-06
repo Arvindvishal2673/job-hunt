@@ -292,7 +292,7 @@ with tab_dashboard:
                 status_text.write("Vetting job listings against candidate profile using Groq LLM...")
             elif "Phase 2" in log_str:
                 progress_bar.progress(0.3)
-                status_text.write("Querying job boards (Arbeitnow, Remotive, RemoteOK, Bing)...")
+                status_text.write("Querying job boards (Arbeitnow, Remotive, RemoteOK, LinkedIn via Apify)...")
             else:
                 progress_bar.progress(0.15)
                 status_text.write("Parsing resume and generating search terms...")
